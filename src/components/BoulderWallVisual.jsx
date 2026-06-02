@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 const HERO_WALL_YAW = 0.34;
@@ -124,6 +124,23 @@ function makeMinimalHolds() {
   }));
 }
 
+// zoom=134 was the original hand-tuned value. At canvas heights above ~493 px the
+// model is fully visible at that zoom; below it we scale down so it always fits.
+// Model screen-space Y extent ≈ 3.2 world-units (scale 0.84 applied).
+// 134 / (3.2 × 1.15) ≈ 0.272 — the per-pixel factor that keeps the model in-frame.
+const ZOOM_MAX = 134;
+const ZOOM_H   = 0.272; // height-based fit factor
+const ZOOM_W   = 0.45;  // loose width guard for very narrow canvases
+
+function AdaptiveZoom() {
+  const { camera, size } = useThree();
+  useEffect(() => {
+    camera.zoom = Math.min(ZOOM_MAX, size.height * ZOOM_H, size.width * ZOOM_W);
+    camera.updateProjectionMatrix();
+  }, [camera, size.width, size.height]);
+  return null;
+}
+
 function BlueprintFloor() {
   const gridGeometry = useMemo(() => buildGridGeometry(), []);
   const gridMaterial = useMemo(() => (
@@ -227,26 +244,28 @@ function ReferenceWall({ hovered }) {
   );
 }
 
-export default function BoulderWallVisual({ hovered = false, dark = false }) {
+export default function BoulderWallVisual({ hovered = false, isHovered, dark = false }) {
+  const active = isHovered !== undefined ? isHovered : hovered;
   return (
     <Canvas
       orthographic
       camera={{ position: [3.8, 3.5, 5.6], zoom: 134, near: 0.1, far: 100 }}
-      gl={{ alpha: !dark, antialias: true }}
+      gl={{ alpha: true, antialias: true }}
       dpr={[1, 2]}
       shadows
       onCreated={({ gl }) => {
         gl.shadowMap.type = THREE.PCFSoftShadowMap;
       }}
-      style={{ width: '100%', height: '100%', background: dark ? '#15181B' : 'transparent' }}
+      style={{ width: '100%', height: '100%' }}
     >
-      <color attach="background" args={[dark ? '#15181B' : '#F8F9FA']} />
+      <AdaptiveZoom />
+      {dark && <color attach="background" args={['#15181B']} />}
       <ambientLight intensity={1.12} color="#F7FAFC" />
       <hemisphereLight intensity={0.58} color="#FFFFFF" groundColor="#CFD6DC" />
       <directionalLight position={[4.5, 6, 5.5]} intensity={1.38} color="#FFFFFF" castShadow />
       <directionalLight position={[-4, 2.4, 2.2]} intensity={0.44} color="#DDE8F0" />
       <BlueprintFloor />
-      <ReferenceWall hovered={hovered} />
+      <ReferenceWall hovered={active} />
     </Canvas>
   );
 }
