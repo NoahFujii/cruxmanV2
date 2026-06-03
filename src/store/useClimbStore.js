@@ -153,10 +153,10 @@ const useClimbStore = create(
       // ─── Analysis ─────────────────────────────────────────────────────
 
       analyzeFrame: async (index) => {
-        const { frameSequence, climberStats, updateFrame } = get();
+        const { frameSequence, climberStats, selectedProblem, updateFrame } = get();
         const frame = frameSequence[index];
         if (!frame) return;
-        const result = runFullAnalysis(frame, climberStats); // stub → null until engine is built
+        const result = runFullAnalysis(frame, climberStats, selectedProblem?.holds ?? []);
         updateFrame(index, { analysisResult: result });
       },
 

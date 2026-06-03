@@ -6,6 +6,8 @@ import { walls } from '../data/walls';
 import { problems } from '../data/problems';
 import useClimbStore from '../store/useClimbStore';
 import { DEFAULT_POSE } from '../components/Climber3D';
+import AnalysisSidebar from '../components/AnalysisSidebar';
+import { generateBeta } from '../utils/betaGenerator';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -298,7 +300,7 @@ function FrameStepper({ frames, activeIndex, onSet, onPrev, onNext }) {
   );
 }
 
-function BetaSection({ controlMode, setControlMode, activeBeta, setActiveBeta, frameSequence, activeFrameIndex, setActiveFrameIndex, nextFrame, prevFrame, onAnalyze }) {
+function BetaSection({ controlMode, setControlMode, activeBeta, setActiveBeta, frameSequence, activeFrameIndex, setActiveFrameIndex, nextFrame, prevFrame, onAnalyze, onGenerateBeta }) {
   const pill = (label, active, onClick) => (
     <button
       key={label}
@@ -345,7 +347,7 @@ function BetaSection({ controlMode, setControlMode, activeBeta, setActiveBeta, f
         {controlMode === 'auto' && (
           <MotionButton
             style={{ width: '100%', padding: '6px', borderRadius: 5, marginBottom: 12, fontSize: 11, fontFamily: "'DM Mono', monospace" }}
-            onClick={() => console.log('TODO: betaGenerator (Prompt 12)')}
+            onClick={onGenerateBeta}
           >
             Generate Beta
           </MotionButton>
@@ -479,6 +481,7 @@ export default function BoulderDesigner() {
     climberStats, setClimberStats,
     controlMode, setControlMode,
     activeBeta, setActiveBeta,
+    setBetaVariations,
     frameSequence,
     activeFrameIndex, setActiveFrameIndex,
     nextFrame, prevFrame,
@@ -532,6 +535,13 @@ export default function BoulderDesigner() {
     await analyzeActiveFrame();
   };
 
+  const handleGenerateBeta = () => {
+    if (!problem) return;
+    const result = generateBeta(problem.holds, climberStats, wall.angleDeg);
+    setBetaVariations({ A: result.A, B: result.B });
+    setActiveBeta('A');
+  };
+
   const closeSidebar = () => { setSidebarType(null); setHighlightedHoldId(null); };
 
   // Climber pose driven by active frame
@@ -578,6 +588,7 @@ export default function BoulderDesigner() {
               nextFrame={nextFrame}
               prevFrame={prevFrame}
               onAnalyze={handleAnalyze}
+              onGenerateBeta={handleGenerateBeta}
             />
           </StaggerItem>
         </Stagger>
@@ -604,14 +615,17 @@ export default function BoulderDesigner() {
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 40, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-            style={{ display: 'flex' }}
+            style={{ display: 'flex', height: '100%' }}
           >
-            <RightSidebar
-              type={sidebarType}
-              hold={sidebarHold}
-              frame={activeFrame}
-              onClose={closeSidebar}
-            />
+            {sidebarType === 'frame'
+              ? <AnalysisSidebar onClose={closeSidebar} />
+              : <RightSidebar
+                  type={sidebarType}
+                  hold={sidebarHold}
+                  frame={activeFrame}
+                  onClose={closeSidebar}
+                />
+            }
           </motion.div>
         )}
       </AnimatePresence>
