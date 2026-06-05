@@ -3,47 +3,88 @@ import { persist } from 'zustand/middleware';
 import { runFullAnalysis } from '../utils/forceAnalysis';
 
 /*
- * ─── Frame shape ────────────────────────────────────────────────────────────
- * A Frame is one FROZEN body position in a climb sequence — not an animation
- * keyframe, but a fully-resolved snapshot a climber can inspect and annotate.
+ * ─── 3-level beta structure ─────────────────────────────────────────────────
  *
- * {
- *   id:             string      — unique id (e.g. crypto.randomUUID())
- *   moveIndex:      number      — which move this frame belongs to
- *   label:          string      — one of:
- *                                 "Setup" | "Load" | "Release" | "Peak" |
- *                                 "Catch" | "Stabilize" | "Reach" | "Latched"
- *   description:    string      — plain-English one-liner
- *   pose:           object      — full body pose (joint angles etc.); see Climber prompt
- *   contacts:       Array<{ limb: string, holdId: string }>
- *                               — which limbs are on which holds THIS frame
- *   analysisResult: object|null — force/muscle output written by analyzeFrame();
- *                                 null until the frame has been analysed
- * }
+ * generatedBetas: [
+ *   {
+ *     id: "A" | "B" | "C",
+ *     label: string,
+ *     description: string,
+ *     positions: [
+ *       {
+ *         index: number,
+ *         label: string,          // "Position 1", "Position 2", ... "Top"
+ *         contacts: Array<{ limb, holdId }>,
+ *         pose: object,           // settled body pose
+ *         analysisResult: object|null,
+ *         moveFrames: [           // transition frames into this position
+ *           {                     // empty for Position 1 (start)
+ *             id: string,
+ *             label: string,      // "Load" | "Reach" | "Grab" | "Settle"
+ *                                 // or "Setup"|"Load"|"Release"|"Peak"|"Catch"|"Stabilize"
+ *             description: string,
+ *             pose: object,
+ *             contacts: Array<{ limb, holdId }>,
+ *             analysisResult: object|null,
+ *           }
+ *         ]
+ *       }
+ *     ]
+ *   }
+ * ]
  */
 
 const DEFAULT_CLIMBER_STATS = {
-  heightCm: 175,
-  weightKg: 70,
-  apeIndexCm: 0,
-  maxGripForceN: 300,
-  maxPullForceN: 500,
+  heightCm:           175,
+  weightKg:           70,
+  apeIndexCm:         0,
+  maxGripForceN:      300,
+  maxPullForceN:      500,
   shoulderFlexionDeg: 180,
-  hipFlexibilityDeg: 90,
+  hipFlexibilityDeg:  90,
 };
 
-// Everything except climberStats is session-only (not persisted).
+// ── Pure selectors (export for use in components) ─────────────────────────────
+
+export function getActiveBeta(state) {
+  return state.generatedBetas.find(b => b.id === state.activeBetaId) ?? null;
+}
+
+export function getActivePosition(state) {
+  const beta = getActiveBeta(state);
+  return beta?.positions[state.activePositionIndex] ?? null;
+}
+
+/** Returns the move frame if one is selected, otherwise the settled position object. */
+export function getActiveFrame(state) {
+  const pos = getActivePosition(state);
+  if (!pos) return null;
+  if (state.activeMoveFrameIndex !== null) {
+    return pos.moveFrames[state.activeMoveFrameIndex] ?? null;
+  }
+  return pos;
+}
+
+/** Returns the pose that the 3D scene should display. */
+export function getActivePose(state) {
+  return getActiveFrame(state)?.pose ?? null;
+}
+
+// ── Session-only initial state ────────────────────────────────────────────────
+
 const INITIAL_SESSION = {
-  selectedWall: null,       // { id, name, angleDeg, type, modelFile }
-  selectedProblem: null,    // { id, name, grade, holds: [] }
-  importedWall: null,       // reserved for gym-scan feature (a glb url)
-  frameSequence: [],        // Frame[]
-  activeFrameIndex: 0,
-  betaVariations: { A: [], B: [] },
-  activeBeta: 'A',
-  controlMode: 'auto',      // 'auto' | 'manual'
-  activeHold: null,
+  selectedWall:          null,
+  selectedProblem:       null,
+  importedWall:          null,
+  generatedBetas:        [],
+  activeBetaId:          'A',
+  activePositionIndex:   0,
+  activeMoveFrameIndex:  null,
+  controlMode:           'auto',
+  activeHold:            null,
 };
+
+// ── Store ─────────────────────────────────────────────────────────────────────
 
 const useClimbStore = create(
   persist(
@@ -51,133 +92,95 @@ const useClimbStore = create(
       ...INITIAL_SESSION,
       climberStats: { ...DEFAULT_CLIMBER_STATS },
 
-      // ─── Wall / problem / import ───────────────────────────────────────
+      // ── Wall / problem ───────────────────────────────────────────────────
 
-      setSelectedWall: (wall) => set({ selectedWall: wall }),
-
+      setSelectedWall:    (wall)    => set({ selectedWall: wall }),
       setSelectedProblem: (problem) => set({ selectedProblem: problem }),
-
-      setImportedWall: (url) => set({ importedWall: url }),
+      setImportedWall:    (url)     => set({ importedWall: url }),
 
       setClimberStats: (patch) =>
-        set((s) => ({ climberStats: { ...s.climberStats, ...patch } })),
+        set(s => ({ climberStats: { ...s.climberStats, ...patch } })),
 
-      // ─── Frame sequence ────────────────────────────────────────────────
+      // ── Beta generation ──────────────────────────────────────────────────
 
-      setFrameSequence: (frames) =>
-        set({ frameSequence: frames, activeFrameIndex: 0 }),
+      setBetas: (betas) => set({
+        generatedBetas:       betas,
+        activeBetaId:         betas[0]?.id ?? 'A',
+        activePositionIndex:  0,
+        activeMoveFrameIndex: null,
+      }),
 
-      appendFrame: (frame) =>
-        set((s) => ({ frameSequence: [...s.frameSequence, frame] })),
+      setActiveBeta: (id) => set({
+        activeBetaId:         id,
+        activePositionIndex:  0,
+        activeMoveFrameIndex: null,
+      }),
 
-      updateFrame: (index, patch) =>
-        set((s) => {
-          if (index < 0 || index >= s.frameSequence.length) return {};
-          const frames = [...s.frameSequence];
-          frames[index] = { ...frames[index], ...patch };
-          return { frameSequence: frames };
-        }),
+      setActivePosition: (i) => set({
+        activePositionIndex:  i,
+        activeMoveFrameIndex: null,
+      }),
 
-      removeFrame: (index) =>
-        set((s) => {
-          const frames = s.frameSequence.filter((_, i) => i !== index);
-          return {
-            frameSequence: frames,
-            activeFrameIndex: Math.min(
-              s.activeFrameIndex,
-              Math.max(0, frames.length - 1)
-            ),
-          };
-        }),
+      // Pass null to return to viewing the settled position
+      setActiveMoveFrame: (i) => set({ activeMoveFrameIndex: i }),
 
-      reorderFrames: (fromIndex, toIndex) =>
-        set((s) => {
-          const frames = [...s.frameSequence];
-          const [moved] = frames.splice(fromIndex, 1);
-          frames.splice(toIndex, 0, moved);
-          return { frameSequence: frames };
-        }),
-
-      clearFrames: () => set({ frameSequence: [], activeFrameIndex: 0 }),
-
-      // ─── Frame navigation ──────────────────────────────────────────────
-
-      setActiveFrameIndex: (i) =>
-        set((s) => {
-          if (s.frameSequence.length === 0) return { activeFrameIndex: 0 };
-          return {
-            activeFrameIndex: Math.max(
-              0,
-              Math.min(i, s.frameSequence.length - 1)
-            ),
-          };
-        }),
-
-      nextFrame: () =>
-        set((s) => {
-          if (s.frameSequence.length === 0) return {};
-          return {
-            activeFrameIndex: Math.min(
-              s.activeFrameIndex + 1,
-              s.frameSequence.length - 1
-            ),
-          };
-        }),
-
-      prevFrame: () =>
-        set((s) => ({
-          activeFrameIndex: Math.max(s.activeFrameIndex - 1, 0),
-        })),
-
-      // ─── Beta variations ───────────────────────────────────────────────
-
-      setBetaVariations: ({ A, B }) =>
-        set({ betaVariations: { A, B } }),
-
-      // setActiveBeta also mirrors that variation into frameSequence so the
-      // rest of the app always reads from frameSequence without knowing which
-      // beta is active.
-      setActiveBeta: (beta) =>
-        set((s) => ({
-          activeBeta: beta,
-          frameSequence: [...(s.betaVariations[beta] ?? [])],
-          activeFrameIndex: 0,
-        })),
-
-      // ─── Control / hold ────────────────────────────────────────────────
+      // ── Control / hold ───────────────────────────────────────────────────
 
       setControlMode: (mode) => set({ controlMode: mode }),
+      setActiveHold:  (hold) => set({ activeHold: hold }),
 
-      setActiveHold: (hold) => set({ activeHold: hold }),
+      // ── Analysis ────────────────────────────────────────────────────────
+      //
+      // Runs on whatever is currently active — either the settled position
+      // (activeMoveFrameIndex === null) or the specific move frame — and
+      // writes the result back into the generatedBetas tree.
 
-      // ─── Analysis ─────────────────────────────────────────────────────
-
-      analyzeFrame: async (index) => {
-        const { frameSequence, climberStats, selectedProblem, updateFrame } = get();
-        const frame = frameSequence[index];
+      analyzeActiveFrame: async () => {
+        const state  = get();
+        const frame  = getActiveFrame(state);
         if (!frame) return;
-        const result = runFullAnalysis(frame, climberStats, selectedProblem?.holds ?? []);
-        updateFrame(index, { analysisResult: result });
+
+        const result = runFullAnalysis(
+          frame,
+          state.climberStats,
+          state.selectedProblem?.holds ?? [],
+        );
+
+        const { activeBetaId, activePositionIndex, activeMoveFrameIndex } = state;
+
+        set(s => ({
+          generatedBetas: s.generatedBetas.map(beta => {
+            if (beta.id !== activeBetaId) return beta;
+            return {
+              ...beta,
+              positions: beta.positions.map((pos, pIdx) => {
+                if (pIdx !== activePositionIndex) return pos;
+                if (activeMoveFrameIndex !== null) {
+                  // Write to the move frame
+                  return {
+                    ...pos,
+                    moveFrames: pos.moveFrames.map((mf, mfIdx) =>
+                      mfIdx === activeMoveFrameIndex ? { ...mf, analysisResult: result } : mf
+                    ),
+                  };
+                }
+                // Write to the settled position
+                return { ...pos, analysisResult: result };
+              }),
+            };
+          }),
+        }));
       },
 
-      analyzeActiveFrame: () => {
-        const { activeFrameIndex, analyzeFrame } = get();
-        return analyzeFrame(activeFrameIndex);
-      },
-
-      // ─── Reset ────────────────────────────────────────────────────────
-      // Wipes all session state back to initial values; climberStats is
-      // intentionally kept (user filled them in, don't throw them away).
+      // ── Reset ────────────────────────────────────────────────────────────
 
       resetClimb: () => set({ ...INITIAL_SESSION }),
     }),
     {
       name: 'cruxman-climber-stats',
-      // Only climberStats survives a page refresh; everything else is rebuilt
-      // from user interaction each session.
       partialize: (state) => ({ climberStats: state.climberStats }),
-    }
-  )
+    },
+  ),
 );
 
 export default useClimbStore;

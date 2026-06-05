@@ -20,6 +20,7 @@
  */
 
 import { Suspense, useEffect, useLayoutEffect, useMemo } from 'react';
+import { DEFAULT_POSE } from '../utils/defaultPose';
 import { useGLTF } from '@react-three/drei';
 
 // useGraph was removed in drei v10 — build the node map ourselves.
@@ -43,9 +44,15 @@ const HIP_W      = 0.10; // half-width from centre to hip joint
 const HIP_DROP   = 0.04; // hip joints sit slightly below hips centre
 
 const ARM_UPPER  = 0.28; // shoulder → elbow
-const ARM_LOWER  = 0.26; // elbow → wrist
-const LEG_UPPER  = 0.42; // hip → knee
+const ARM_LOWER  = 0.25; // elbow → wrist  (total arm reach ~0.53 m)
+const LEG_UPPER  = 0.40; // hip → knee
 const LEG_LOWER  = 0.40; // knee → ankle
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// Enforce elbows/knees bend away from the wall (+Z = outward from wall face).
+// This prevents anatomically broken bends when hints become degenerate.
+const BEND_AWAY_FROM_WALL = new THREE.Vector3(0, 0, 1);
 
 const FIGURE_COLOR = '#3A3A3A';
 
@@ -85,82 +92,71 @@ const BONE_MAP = {
  *   ankleL/R:    { x, y, z }           ankle WORLD TARGET position (drives IK)
  * }
  */
-export const DEFAULT_POSE = {
-  hips:   { x: 0, y: 0.95, z: 0 },
-  spine:  { rotX: 0, rotZ: 0 },
+// DEFAULT_POSE lives in src/utils/defaultPose.js (imported above) to keep
+// this file component-only and satisfy React Fast Refresh.
 
-  shoulderL: { rotX: 0.05, rotY: 0,    rotZ:  0.10 },
-  elbowL:    { rotX: 0.15 },
-  wristL:    { x: -0.24, y: 0.90, z: 0.04 },  // 0.503m from shoulder → within 0.54m reach
+// ── Joint solver (HIP-LOCAL space) ────────────────────────────────────────────
+//
+// Everything returned here is in LOCAL space where the hips are the origin (0,0,0).
+// ProceduralClimber positions its <group> at pose.hips world position, so all
+// child meshes can use these local coordinates directly.
+//
+// World-space wrist/ankle targets from the pose are converted to local before IK
+// so the solver always works relative to the body root.
 
-  shoulderR: { rotX: 0.05, rotY: 0,    rotZ: -0.10 },
-  elbowR:    { rotX: 0.15 },
-  wristR:    { x:  0.24, y: 0.90, z: 0.04 },
-
-  hipL:  { rotX: 0, rotY: 0, rotZ:  0.04 },
-  kneeL: { rotX: 0.05 },
-  ankleL: { x: -0.10, y: 0.10, z: 0 },  // 0.81m from hip joint → within 0.82m reach
-
-  hipR:  { rotX: 0, rotY: 0, rotZ: -0.04 },
-  kneeR: { rotX: 0.05 },
-  ankleR: { x:  0.10, y: 0.10, z: 0 },
-};
-
-// ── Joint world-position solver ────────────────────────────────────────────
-
-/**
- * Computes all joint world positions from a pose object.
- * Used by ProceduralClimber to place and orient each limb segment.
- * Also used by RiggedClimber to compute elbow/knee IK angles.
- */
 function computeJoints(pose) {
-  const hips = new THREE.Vector3(pose.hips.x, pose.hips.y, pose.hips.z);
+  const hipsWorld = new THREE.Vector3(pose.hips.x, pose.hips.y, pose.hips.z);
 
-  // Spine direction (small-angle approx: rotZ tilts left/right, rotX tilts fwd/back)
+  // LOCAL origin = hips
+  const origin = new THREE.Vector3(0, 0, 0);
+
+  // Spine direction
   const spineDir = new THREE.Vector3(
     Math.sin(pose.spine.rotZ),
     1,
     -Math.sin(pose.spine.rotX),
   ).normalize();
-  const spineTop = hips.clone().addScaledVector(spineDir, SPINE_LEN);
+  const spineTop = origin.clone().addScaledVector(spineDir, SPINE_LEN);
   const head     = spineTop.clone().addScaledVector(spineDir, NECK_LEN + HEAD_R);
 
-  // Shoulder joints (lateral offset from spine top)
+  // Shoulder / hip joints (local offsets from origin)
   const shoulderL = spineTop.clone().add(new THREE.Vector3(-SHOULDER_W, 0, 0));
   const shoulderR = spineTop.clone().add(new THREE.Vector3(+SHOULDER_W, 0, 0));
+  const hipL      = new THREE.Vector3(-HIP_W, -HIP_DROP, 0);
+  const hipR      = new THREE.Vector3(+HIP_W, -HIP_DROP, 0);
 
-  // Hip joints (lateral + slight drop)
-  const hipL = hips.clone().add(new THREE.Vector3(-HIP_W, -HIP_DROP, 0));
-  const hipR = hips.clone().add(new THREE.Vector3(+HIP_W, -HIP_DROP, 0));
+  // World → local for end-effector targets
+  const toLocal = (wx, wy, wz) => new THREE.Vector3(wx - hipsWorld.x, wy - hipsWorld.y, wz - hipsWorld.z);
+  const wristLLocal  = toLocal(pose.wristL.x, pose.wristL.y, pose.wristL.z);
+  const wristRLocal  = toLocal(pose.wristR.x, pose.wristR.y, pose.wristR.z);
+  const ankleLLocal  = toLocal(pose.ankleL.x, pose.ankleL.y, pose.ankleL.z);
+  const ankleRLocal  = toLocal(pose.ankleR.x, pose.ankleR.y, pose.ankleR.z);
 
-  // World targets
-  const wristL  = new THREE.Vector3(pose.wristL.x,  pose.wristL.y,  pose.wristL.z);
-  const wristR  = new THREE.Vector3(pose.wristR.x,  pose.wristR.y,  pose.wristR.z);
-  const ankleL  = new THREE.Vector3(pose.ankleL.x,  pose.ankleL.y,  pose.ankleL.z);
-  const ankleR  = new THREE.Vector3(pose.ankleR.x,  pose.ankleR.y,  pose.ankleR.z);
-
-  // IK — arms: elbows bend in front of the body (+Z = toward wall)
+  // IK — arms (elbows bend away from wall and slightly inward)
   const elbowLHint = shoulderL.clone().add(new THREE.Vector3( 0.05, -0.10,  0.28));
   const elbowRHint = shoulderR.clone().add(new THREE.Vector3(-0.05, -0.10,  0.28));
-  const { mid: elbowL, rootAngle: elRA_L, midAngle: elMA_L } =
-    solveTwoBoneIK(shoulderL, wristL, ARM_UPPER, ARM_LOWER, elbowLHint);
-  const { mid: elbowR, rootAngle: elRA_R, midAngle: elMA_R } =
-    solveTwoBoneIK(shoulderR, wristR, ARM_UPPER, ARM_LOWER, elbowRHint);
+  const { mid: elbowL, end: wristLActual, rootAngle: elRA_L, midAngle: elMA_L } =
+    solveTwoBoneIK(shoulderL, wristLLocal, ARM_UPPER, ARM_LOWER, elbowLHint, BEND_AWAY_FROM_WALL);
+  const { mid: elbowR, end: wristRActual, rootAngle: elRA_R, midAngle: elMA_R } =
+    solveTwoBoneIK(shoulderR, wristRLocal, ARM_UPPER, ARM_LOWER, elbowRHint, BEND_AWAY_FROM_WALL);
 
-  // IK — legs: knees bend forward (+Z)
+  // IK — legs (knees bend away from wall)
   const kneeLHint = hipL.clone().add(new THREE.Vector3( 0, -0.20,  0.25));
   const kneeRHint = hipR.clone().add(new THREE.Vector3( 0, -0.20,  0.25));
-  const { mid: kneeL, rootAngle: knRA_L, midAngle: knMA_L } =
-    solveTwoBoneIK(hipL, ankleL, LEG_UPPER, LEG_LOWER, kneeLHint);
-  const { mid: kneeR, rootAngle: knRA_R, midAngle: knMA_R } =
-    solveTwoBoneIK(hipR, ankleR, LEG_UPPER, LEG_LOWER, kneeRHint);
+  const { mid: kneeL, end: ankleLActual, rootAngle: knRA_L, midAngle: knMA_L } =
+    solveTwoBoneIK(hipL, ankleLLocal, LEG_UPPER, LEG_LOWER, kneeLHint, BEND_AWAY_FROM_WALL);
+  const { mid: kneeR, end: ankleRActual, rootAngle: knRA_R, midAngle: knMA_R } =
+    solveTwoBoneIK(hipR, ankleRLocal, LEG_UPPER, LEG_LOWER, kneeRHint, BEND_AWAY_FROM_WALL);
 
+  // All positions are LOCAL (origin = hips)
   return {
-    hips, spineTop, head,
-    shoulderL, elbowL, wristL, armAngles: { L: { root: elRA_L, mid: elMA_L }, R: { root: elRA_R, mid: elMA_R } },
-    shoulderR, elbowR, wristR,
-    hipL, kneeL, ankleL, legAngles: { L: { root: knRA_L, mid: knMA_L }, R: { root: knRA_R, mid: knMA_R } },
-    hipR, kneeR, ankleR,
+    hips: origin, spineTop, head,
+    shoulderL, elbowL, wristL: wristLActual,
+    shoulderR, elbowR, wristR: wristRActual,
+    armAngles: { L: { root: elRA_L, mid: elMA_L }, R: { root: elRA_R, mid: elMA_R } },
+    hipL, kneeL, ankleL: ankleLActual,
+    hipR, kneeR, ankleR: ankleRActual,
+    legAngles: { L: { root: knRA_L, mid: knMA_L }, R: { root: knRA_R, mid: knMA_R } },
   };
 }
 
@@ -206,10 +202,16 @@ function Jnt({ pos, r = 0.030 }) {
 // ── Procedural climber ─────────────────────────────────────────────────────
 
 function ProceduralClimber({ pose }) {
-  const j = useMemo(() => computeJoints(pose), [pose]);
+  const j        = useMemo(() => computeJoints(pose), [pose]);
+  const hipsPos  = useMemo(
+    () => [pose.hips.x, pose.hips.y, pose.hips.z],
+    [pose.hips.x, pose.hips.y, pose.hips.z],
+  );
 
+  // Group is placed at the hip world position.
+  // All j.* positions are LOCAL (hip = origin), so child meshes use them directly.
   return (
-    <group>
+    <group position={hipsPos}>
       {/* Head */}
       <mesh position={j.head.toArray()}>
         <sphereGeometry args={[HEAD_R, 12, 8]} />
@@ -285,12 +287,16 @@ function RiggedClimber({ pose }) {
     const spine = get('spine');
     if (spine) spine.rotation.set(pose.spine.rotX, 0, pose.spine.rotZ);
 
-    // ── Shoulders (direct Euler) ────────────────────────────────────────
+    // ── Shoulders (direct Euler, clamped to human range) ───────────────
     (['L', 'R']).forEach((s) => {
       const bone = get(`shoulder${s}`);
       if (!bone) return;
       const r = pose[`shoulder${s}`];
-      bone.rotation.set(r.rotX, r.rotY, r.rotZ);
+      bone.rotation.set(
+        clamp(r.rotX, -Math.PI / 3, Math.PI),   // −60° to 180°
+        r.rotY,
+        r.rotZ,
+      );
     });
 
     // ── Update world matrices so we can read bone world positions ───────
@@ -312,7 +318,7 @@ function RiggedClimber({ pose }) {
       const wTarget = pose[`wrist${s}`];
       const wristWorld = new THREE.Vector3(wTarget.x, wTarget.y, wTarget.z);
 
-      // Bend hint: in front of and below shoulder
+      // Bend hint: away from wall and slightly below shoulder
       const sign = s === 'L' ? -1 : 1;
       const hint = shoulderWorld.clone().add(new THREE.Vector3(sign * 0.05, -0.10, 0.25));
 
@@ -320,9 +326,10 @@ function RiggedClimber({ pose }) {
       const len1 = shoulderBone.children[0]?.position.length() || ARM_UPPER;
       const len2 = elbowBone.children[0]?.position.length()    || ARM_LOWER;
 
-      const { midAngle } = solveTwoBoneIK(shoulderWorld, wristWorld, len1, len2, hint);
-      // midAngle is the full included angle at the elbow; convert to bend rotation
-      elbowBone.rotation.x = -(Math.PI - midAngle);
+      const { midAngle } = solveTwoBoneIK(shoulderWorld, wristWorld, len1, len2, hint, BEND_AWAY_FROM_WALL);
+      // Clamp to anatomical elbow range (0–160°) before applying
+      const elbow = clamp(midAngle, 0, 160 * Math.PI / 180);
+      elbowBone.rotation.x = -(Math.PI - elbow);
     });
 
     // ── Hips (direct Euler) ─────────────────────────────────────────────
@@ -352,8 +359,10 @@ function RiggedClimber({ pose }) {
       const len1 = hipBone.children[0]?.position.length()   || LEG_UPPER;
       const len2 = kneeBone.children[0]?.position.length()  || LEG_LOWER;
 
-      const { midAngle } = solveTwoBoneIK(hipWorld, ankleWorld, len1, len2, hint);
-      kneeBone.rotation.x = -(Math.PI - midAngle);
+      const { midAngle } = solveTwoBoneIK(hipWorld, ankleWorld, len1, len2, hint, BEND_AWAY_FROM_WALL);
+      // Clamp to anatomical knee range (0–150°) before applying
+      const knee = clamp(midAngle, 0, 150 * Math.PI / 180);
+      kneeBone.rotation.x = -(Math.PI - knee);
     });
 
     scene.updateMatrixWorld(true);

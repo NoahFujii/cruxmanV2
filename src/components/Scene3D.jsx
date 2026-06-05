@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import ModelOrFallback from './ModelOrFallback';
 import Climber3D from './Climber3D';
+import { holdToWorldSpace } from '../utils/wallCoordinates';
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
@@ -185,7 +186,7 @@ function ProceduralHoldContent({ type, color }) {
 
 // ── Individual hold with smooth hover-scale ──────────────────────────────────
 
-function HoldMesh({ hold, isHighlighted, onClick }) {
+function HoldMesh({ hold, wall, isHighlighted, onClick }) {
   const groupRef  = useRef();
   const scaleNow  = useRef(1.0);
   const [hovered, setHovered] = useState(false);
@@ -205,14 +206,14 @@ function HoldMesh({ hold, isHighlighted, onClick }) {
   // x: 0–1 → -WALL_W/2 … +WALL_W/2
   // y: 0–1 → 0 … WALL_H
   // z: surface offset (ensure at least 0.02 m from the face)
-  const px = (hold.x - 0.5) * WALL_W;
-  const py = hold.y * WALL_H;
-  const pz = Math.max(hold.z, 0.02);
+  const p = holdToWorldSpace(hold, wall);
+  const rotX = ((wall.angleDeg - 90) * Math.PI) / 180;
 
   return (
     <group
       ref={groupRef}
-      position={[px, py, pz]}
+      position={[p.x, p.y, p.z]}
+      rotation={[rotX, 0, 0]}
       onPointerOver={(e) => {
         e.stopPropagation();
         setHovered(true);
@@ -253,6 +254,7 @@ function WallScene({ wall, holds, onHoldClick, highlightedHoldId }) {
   const rotX = ((wall.angleDeg - 90) * Math.PI) / 180;
 
   return (
+    <>
     <group rotation={[rotX, 0, 0]}>
       {/* Wall surface — GLB when present, procedural plane otherwise */}
       <ModelOrFallback
@@ -261,16 +263,18 @@ function WallScene({ wall, holds, onHoldClick, highlightedHoldId }) {
         fallback={<ProceduralWall />}
       />
 
-      {/* One hold per entry */}
-      {(holds ?? []).map((hold) => (
-        <HoldMesh
-          key={hold.id}
-          hold={hold}
-          isHighlighted={hold.id === highlightedHoldId}
-          onClick={onHoldClick}
-        />
-      ))}
     </group>
+    {/* One hold per entry */}
+    {(holds ?? []).map((hold) => (
+      <HoldMesh
+        key={hold.id}
+        hold={hold}
+        wall={wall}
+        isHighlighted={hold.id === highlightedHoldId}
+        onClick={onHoldClick}
+      />
+    ))}
+    </>
   );
 }
 
@@ -302,7 +306,7 @@ function CameraSync({ wy, wz, controlsRef }) {
       ctrl.target.set(0, wy, wz);
       ctrl.update();
     }
-  }, [camera, wy, wz]); // controlsRef is stable — no need to list
+  }, [camera, wy, wz, controlsRef]); // controlsRef is stable — listed for lint
 
   return null;
 }
@@ -326,14 +330,14 @@ export default function Scene3D({
   climberPose,
   showClimber = false,
 }) {
+  const controlsRef = useRef();
+
   if (!wall) return null;
 
   // Wall centre in world space — recomputed whenever the wall angle changes
   const rotX = ((wall.angleDeg - 90) * Math.PI) / 180;
   const wallCY = (WALL_H / 2) * Math.cos(rotX);
   const wallCZ = (WALL_H / 2) * Math.sin(rotX);
-
-  const controlsRef = useRef();
 
   return (
     <Canvas

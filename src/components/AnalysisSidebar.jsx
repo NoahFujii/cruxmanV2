@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { MotionButton } from './motion/Motion';
-import useClimbStore from '../store/useClimbStore';
+import useClimbStore, { getActiveFrame } from '../store/useClimbStore';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -113,12 +113,8 @@ function COMSvg({ com, contacts, pose, wallAngleDeg }) {
 
 export default function AnalysisSidebar({ onClose }) {
   const navigate = useNavigate();
-  const {
-    frameSequence, activeFrameIndex,
-    selectedWall, selectedProblem,
-  } = useClimbStore();
-
-  const frame  = frameSequence[activeFrameIndex] ?? null;
+  const { selectedWall, selectedProblem } = useClimbStore();
+  const frame = useClimbStore(getActiveFrame);
   const result = frame?.analysisResult ?? null;
   const contacts = frame?.contacts ?? [];
 
