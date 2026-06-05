@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { cmToFtIn, kgToLb } from '../utils/units';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MotionButton, Stagger, StaggerItem } from '../components/motion/Motion';
 import Scene3D from '../components/Scene3D';
@@ -10,6 +11,8 @@ import AnalysisSidebar from '../components/AnalysisSidebar';
 import { generateBeta } from '../utils/betaGenerator';
 
 // ── Constants ──────────────────────────────────────────────────────────────
+
+const MONO = "'DM Mono', monospace";
 
 const GRADE_FILTERS = ['All', 'V0–V2', 'V3–V5', 'V6–V8', 'V9+'];
 const SPRING        = { type: 'spring', stiffness: 360, damping: 32 };
@@ -97,31 +100,94 @@ function Section({ label, collapsible = false, defaultOpen = true, children }) {
   );
 }
 
-function StatInput({ label, value, unit, onChange }) {
-  const [focused, setFocused] = useState(false);
+function StatSlider({ label, value, min, max, step = 1, onChange, readout }) {
   return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 9, fontFamily: "'DM Mono', monospace", color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        {label}
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={{ fontSize: 9, fontFamily: "'DM Mono', monospace", color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: 'var(--text-secondary)' }}>{readout}</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-        <input
-          type="number"
-          value={value}
-          onChange={e => onChange(Number(e.target.value))}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          style={{
-            flex: 1, background: 'none', border: 'none',
-            borderBottom: `1px solid ${focused ? 'var(--accent)' : 'var(--border)'}`,
-            padding: '3px 0',
-            fontFamily: "'DM Mono', monospace", fontSize: 13,
-            color: 'var(--text-primary)', outline: 'none',
-            transition: 'border-color 0.15s',
-          }}
-        />
-        {unit && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{unit}</span>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input type="range" min={min} max={max} step={step} value={value}
+               onChange={e => onChange(Number(e.target.value))}
+               style={{ flex: 1, accentColor: 'var(--accent)', height: 2 }} />
+        <input type="number" min={min} max={max} step={step} value={value}
+               onChange={e => onChange(Number(e.target.value))}
+               style={{ width: 52, background: 'none', border: 'none',
+                        borderBottom: '1px solid var(--border)', padding: '2px 0',
+                        fontFamily: "'DM Mono', monospace", fontSize: 12,
+                        color: 'var(--text-primary)', outline: 'none', textAlign: 'right' }} />
       </div>
+    </div>
+  );
+}
+
+// ── Hold-type knowledge ────────────────────────────────────────────────────
+
+function capFirst(s) {
+  if (!s) return '—';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const HOLD_USAGE = {
+  jug:      'Large, positive edge — pull in any direction; forgiving and endurance-focused.',
+  crimp:    'Small edge gripped with curled fingers; high tendon load, demands precise footwork.',
+  pinch:    'Squeezed between thumb and fingers; trains pinch-specific grip strength.',
+  pocket:   'One or two fingers in a hole; isolates individual finger strength.',
+  sloper:   'Rounded, open-hand press; rewards keeping hips close and weight directly under it.',
+  foothold: 'Dedicated foot placement; maximise rubber contact and commit your weight to it.',
+};
+
+const LEGEND_SHORT = {
+  jug:      'Large positive — pull any direction',
+  crimp:    'Small edge — curled fingers, high tendon load',
+  pinch:    'Squeeze thumb + fingers',
+  pocket:   '1–2 finger hole',
+  sloper:   'Rounded dome — open hand, weight under',
+  foothold: 'Foot placement only',
+  smear:    'Friction only — rubber on wall, no hold',
+};
+
+const LEGEND_ORDER = ['jug', 'crimp', 'pinch', 'pocket', 'sloper', 'foothold', 'smear'];
+
+function HoldLegend({ holds, hasSmears }) {
+  const types = useMemo(() => {
+    const seen = new Set((holds ?? []).map(h => h.type));
+    if (hasSmears) seen.add('smear');
+    return LEGEND_ORDER.filter(t => seen.has(t));
+  }, [holds, hasSmears]);
+
+  if (!types.length) return null;
+
+  return (
+    <div style={{
+      position: 'absolute', bottom: 16, left: 16, zIndex: 10,
+      background: 'rgba(255,253,250,0.90)',
+      border: '1px solid #E0DED9',
+      borderRadius: 8,
+      padding: '8px 10px',
+      backdropFilter: 'blur(4px)',
+      WebkitBackdropFilter: 'blur(4px)',
+      pointerEvents: 'none',
+    }}>
+      {types.map((type, i) => (
+        <div key={type} style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          marginBottom: i < types.length - 1 ? 4 : 0,
+        }}>
+          <span style={{
+            fontFamily: MONO, fontSize: 9,
+            background: '#F5F4F1', border: '1px solid #E0DED9',
+            borderRadius: 3, padding: '1px 5px',
+            color: '#6B6B6B', flexShrink: 0,
+          }}>
+            {capFirst(type)}
+          </span>
+          <span style={{ fontSize: 10, color: '#9A9791', lineHeight: 1.3 }}>
+            {LEGEND_SHORT[type]}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -236,19 +302,36 @@ function ClimberStatsSection({ stats, onSave }) {
 
   return (
     <Section label="Climber" collapsible defaultOpen={false}>
-      <div style={{ padding: '2px 16px 14px' }}>
-        <StatInput label="Height"    value={local.heightCm}       unit="cm" onChange={v => update('heightCm', v)} />
-        <StatInput label="Weight"    value={local.weightKg}       unit="kg" onChange={v => update('weightKg', v)} />
-        <StatInput label="Ape Index" value={local.apeIndexCm}     unit="cm" onChange={v => update('apeIndexCm', v)} />
-        <StatInput label="Max Grip"  value={local.maxGripForceN}  unit="N"  onChange={v => update('maxGripForceN', v)} />
-        <StatInput label="Max Pull"  value={local.maxPullForceN}  unit="N"  onChange={v => update('maxPullForceN', v)} />
-        <MotionButton
-          onClick={() => onSave(local)}
-          style={{
-            width: '100%', padding: '6px', borderRadius: 8, marginTop: 4,
-            fontSize: 11, fontFamily: "'DM Mono', monospace", fontWeight: 500,
-          }}
-        >
+      <div style={{ padding: '6px 16px 14px' }}>
+        <StatSlider label="Height" value={local.heightCm} min={140} max={210}
+                    onChange={v => update('heightCm', v)}
+                    readout={`${local.heightCm} cm · ${cmToFtIn(local.heightCm)}`} />
+        <StatSlider label="Weight" value={local.weightKg} min={40} max={120}
+                    onChange={v => update('weightKg', v)}
+                    readout={`${local.weightKg} kg · ${kgToLb(local.weightKg)} lb`} />
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 9, fontFamily: "'DM Mono', monospace", color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Gender</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[['Male', 'male'], ['Female', 'female']].map(([lbl, val]) => {
+              const active = local.gender === val;
+              return (
+                <MotionButton key={val} onClick={() => update('gender', val)}
+                  style={{ flex: 1, padding: '6px 0', borderRadius: 8,
+                           border: active ? '1px solid var(--accent)' : '1px solid var(--border)',
+                           background: active ? 'var(--accent-muted)' : 'transparent',
+                           color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                           fontFamily: "'DM Mono', monospace", fontSize: 11 }}>
+                  {lbl}
+                </MotionButton>
+              );
+            })}
+          </div>
+        </div>
+
+        <MotionButton onClick={() => onSave(local)}
+          style={{ width: '100%', padding: '6px', borderRadius: 8, marginTop: 4,
+                   fontSize: 11, fontFamily: "'DM Mono', monospace", fontWeight: 500 }}>
           Save Stats
         </MotionButton>
       </div>
@@ -262,6 +345,7 @@ function contactSummary(contacts, holds) {
   if (!contacts?.length) return '—';
   const holdMap = Object.fromEntries((holds ?? []).map(h => [h.id, h]));
   return contacts.map(c => {
+    if (c.smear) return `${LIMB_SHORT[c.limb] ?? c.limb} smear`;
     const hold = holdMap[c.holdId];
     return `${LIMB_SHORT[c.limb] ?? c.limb} ${hold?.type ?? '?'}`;
   }).join(' · ');
@@ -487,24 +571,46 @@ function InfoRow({ label, value }) {
 }
 
 function HoldPanel({ hold }) {
+  const role = hold.isStart && hold.isTop ? 'Start + Top'
+             : hold.isStart               ? 'Start'
+             : hold.isTop                 ? 'Top'
+                                          : 'Intermediate';
+  const usage = HOLD_USAGE[hold.type] ?? null;
+
   return (
     <div>
-      <InfoRow label="Type"     value={hold.type} />
-      <InfoRow label="Friction" value={hold.frictionCoeff} />
-      <InfoRow label="X"        value={hold.x.toFixed(2)} />
-      <InfoRow label="Y"        value={hold.y.toFixed(2)} />
-      <div style={{ display: 'flex', gap: 5, marginTop: 8, flexWrap: 'wrap' }}>
-        {hold.isStart && (
-          <span style={{ fontSize: 9, fontFamily: "'DM Mono', monospace", padding: '2px 6px', borderRadius: 3, background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-            START
-          </span>
-        )}
-        {hold.isTop && (
-          <span style={{ fontSize: 9, fontFamily: "'DM Mono', monospace", padding: '2px 6px', borderRadius: 3, background: 'rgba(46,204,113,0.15)', color: '#2ECC71' }}>
-            TOP
-          </span>
-        )}
+      {/* Type + role chips */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <span style={{
+          fontFamily: MONO, fontSize: 12, fontWeight: 600,
+          color: 'var(--text-primary)',
+        }}>
+          {capFirst(hold.type)}
+        </span>
+        <span style={{
+          fontFamily: MONO, fontSize: 9, padding: '2px 7px', borderRadius: 4,
+          background: hold.isStart ? 'var(--accent-muted)' : hold.isTop ? 'rgba(46,204,113,0.15)' : 'var(--surface-2)',
+          color: hold.isStart ? 'var(--accent)' : hold.isTop ? '#2ECC71' : 'var(--text-muted)',
+          border: `1px solid ${hold.isStart ? 'var(--accent-muted)' : hold.isTop ? 'rgba(46,204,113,0.25)' : 'var(--border)'}`,
+        }}>
+          {role}
+        </span>
       </div>
+
+      {/* Usage note */}
+      {usage && (
+        <p style={{
+          fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.55,
+          marginBottom: 12,
+        }}>
+          {usage}
+        </p>
+      )}
+
+      {/* Stats */}
+      <InfoRow label="Friction μ" value={hold.frictionCoeff} />
+      <InfoRow label="Position X" value={hold.x.toFixed(2)} />
+      <InfoRow label="Position Y" value={hold.y.toFixed(2)} />
     </div>
   );
 }
@@ -555,12 +661,22 @@ export default function BoulderDesigner() {
   const problem      = problems.find(p => p.id === selectedProblem?.id)
     ?? wallProblems[0] ?? null;
 
-  const [gradeFilter, setGradeFilter]     = useState('All');
-  const filteredProblems                  = wallProblems.filter(p => matchGrade(p.grade, gradeFilter));
+  const [gradeFilter, setGradeFilter]         = useState('All');
+  const filteredProblems                      = wallProblems.filter(p => matchGrade(p.grade, gradeFilter));
   const [highlightedHoldId, setHighlightedHoldId] = useState(null);
-  const [sidebarType, setSidebarType]     = useState(null);
-  const [sidebarHold, setSidebarHold]     = useState(null);
-  const sidebarOpen                       = sidebarType !== null;
+  const [sidebarType, setSidebarType]         = useState(null);
+  const [sidebarHold, setSidebarHold]         = useState(null);
+  const sidebarOpen                           = sidebarType !== null;
+  const [showHoldLabels, setShowHoldLabels]   = useState(true);
+
+  const hasSmearsInBeta = useMemo(() =>
+    generatedBetas.some(beta =>
+      beta.positions.some(pos =>
+        pos.contacts.some(c => c.smear) ||
+        pos.moveFrames.some(mf => mf.contacts?.some(c => c.smear))
+      )
+    ),
+  [generatedBetas]);
 
   const handleWallSelect = (w) => {
     setSelectedWall(w);
@@ -590,6 +706,7 @@ export default function BoulderDesigner() {
 
   const handleGenerateBeta = () => {
     if (!problem) return;
+    setSelectedWall(wall);
     const { betas } = generateBeta(problem.holds, climberStats, wall);
     setBetas(betas);
   };
@@ -648,6 +765,28 @@ export default function BoulderDesigner() {
 
       {/* ── Center: 3D canvas ───────────────────────────────────────────── */}
       <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+
+        {/* Labels toggle — top-left overlay */}
+        <div style={{ position: 'absolute', top: 12, left: 12, zIndex: 10 }}>
+          <MotionButton
+            onClick={() => setShowHoldLabels(v => !v)}
+            style={{
+              padding: '4px 11px', borderRadius: 7,
+              fontSize: 10, fontFamily: MONO,
+              border: `1px solid ${showHoldLabels ? 'var(--accent)' : 'var(--border)'}`,
+              background: showHoldLabels ? 'var(--accent-muted)' : 'rgba(255,253,250,0.82)',
+              color: showHoldLabels ? 'var(--accent)' : 'var(--text-muted)',
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+            }}
+          >
+            Labels{showHoldLabels ? ' ✓' : ''}
+          </MotionButton>
+        </div>
+
+        {/* Hold-type legend — bottom-left overlay */}
+        <HoldLegend holds={problem?.holds ?? []} hasSmears={hasSmearsInBeta} />
+
         <Scene3D
           wall={wall}
           holds={problem?.holds ?? []}
@@ -655,6 +794,7 @@ export default function BoulderDesigner() {
           highlightedHoldId={highlightedHoldId}
           climberPose={displayPose}
           showClimber={showClimber}
+          showHoldLabels={showHoldLabels}
         />
       </div>
 

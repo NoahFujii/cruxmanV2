@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { OrbitControls, Html } from '@react-three/drei';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import ModelOrFallback from './ModelOrFallback';
@@ -184,9 +184,16 @@ function ProceduralHoldContent({ type, color }) {
   );
 }
 
+// ── Capitalise helper ────────────────────────────────────────────────────────
+
+function capFirst(s) {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 // ── Individual hold with smooth hover-scale ──────────────────────────────────
 
-function HoldMesh({ hold, wall, isHighlighted, onClick }) {
+function HoldMesh({ hold, wall, isHighlighted, onClick, showHoldLabels }) {
   const groupRef  = useRef();
   const scaleNow  = useRef(1.0);
   const [hovered, setHovered] = useState(false);
@@ -202,11 +209,7 @@ function HoldMesh({ hold, wall, isHighlighted, onClick }) {
               : hold.isTop     ? HC.top
                                : HC.regular;
 
-  // Map normalised hold coords → wall-local world units.
-  // x: 0–1 → -WALL_W/2 … +WALL_W/2
-  // y: 0–1 → 0 … WALL_H
-  // z: surface offset (ensure at least 0.02 m from the face)
-  const p = holdToWorldSpace(hold, wall);
+  const p    = holdToWorldSpace(hold, wall);
   const rotX = ((wall.angleDeg - 90) * Math.PI) / 180;
 
   return (
@@ -233,6 +236,40 @@ function HoldMesh({ hold, wall, isHighlighted, onClick }) {
         color={color}
         fallback={<ProceduralHoldContent type={hold.type} color={color} />}
       />
+
+      {/* Billboarded label — offset in local Z (wall-surface normal, always toward viewer) */}
+      {showHoldLabels && (
+        <Html
+          center
+          distanceFactor={10}
+          position={[0, 0, 0.20]}
+          style={{ pointerEvents: 'none' }}
+          zIndexRange={[4, 0]}
+        >
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 3,
+            background: 'rgba(255,253,250,0.93)',
+            border: '1px solid #E0DED9',
+            borderRadius: 4,
+            padding: '2px 5px',
+            fontFamily: "'DM Mono', monospace",
+            fontSize: 9,
+            color: '#6B6B6B',
+            whiteSpace: 'nowrap',
+            lineHeight: '1.3',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}>
+            {capFirst(hold.type)}
+            {hold.isStart && (
+              <span style={{ color: '#4A90D9', fontWeight: 700, fontSize: 8 }}>S</span>
+            )}
+            {hold.isTop && (
+              <span style={{ color: '#2ECC71', fontWeight: 700, fontSize: 8 }}>T</span>
+            )}
+          </div>
+        </Html>
+      )}
     </group>
   );
 }
@@ -250,30 +287,28 @@ function HoldMesh({ hold, wall, isHighlighted, onClick }) {
 // The group pivot is at world (0,0,0), which becomes the bottom edge of the
 // wall — so the floor attachment point is always fixed regardless of angle.
 
-function WallScene({ wall, holds, onHoldClick, highlightedHoldId }) {
+function WallScene({ wall, holds, onHoldClick, highlightedHoldId, showHoldLabels }) {
   const rotX = ((wall.angleDeg - 90) * Math.PI) / 180;
 
   return (
     <>
-    <group rotation={[rotX, 0, 0]}>
-      {/* Wall surface — GLB when present, procedural plane otherwise */}
-      <ModelOrFallback
-        src={wall.modelFile ? `/models/${wall.modelFile}` : null}
-        color="#D4D1CC"
-        fallback={<ProceduralWall />}
-      />
-
-    </group>
-    {/* One hold per entry */}
-    {(holds ?? []).map((hold) => (
-      <HoldMesh
-        key={hold.id}
-        hold={hold}
-        wall={wall}
-        isHighlighted={hold.id === highlightedHoldId}
-        onClick={onHoldClick}
-      />
-    ))}
+      <group rotation={[rotX, 0, 0]}>
+        <ModelOrFallback
+          src={wall.modelFile ? `/models/${wall.modelFile}` : null}
+          color="#D4D1CC"
+          fallback={<ProceduralWall />}
+        />
+      </group>
+      {(holds ?? []).map((hold) => (
+        <HoldMesh
+          key={hold.id}
+          hold={hold}
+          wall={wall}
+          isHighlighted={hold.id === highlightedHoldId}
+          onClick={onHoldClick}
+          showHoldLabels={showHoldLabels}
+        />
+      ))}
     </>
   );
 }
@@ -329,6 +364,7 @@ export default function Scene3D({
   highlightedHoldId,
   climberPose,
   showClimber = false,
+  showHoldLabels = false,
 }) {
   const controlsRef = useRef();
 
@@ -377,6 +413,7 @@ export default function Scene3D({
           holds={holds}
           onHoldClick={onHoldClick}
           highlightedHoldId={highlightedHoldId}
+          showHoldLabels={showHoldLabels}
         />
         {showClimber && <Climber3D pose={climberPose} visible />}
       </Suspense>

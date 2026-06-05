@@ -35,13 +35,9 @@ import { runFullAnalysis } from '../utils/forceAnalysis';
  */
 
 const DEFAULT_CLIMBER_STATS = {
-  heightCm:           175,
-  weightKg:           70,
-  apeIndexCm:         0,
-  maxGripForceN:      300,
-  maxPullForceN:      500,
-  shoulderFlexionDeg: 180,
-  hipFlexibilityDeg:  90,
+  heightCm: 175,
+  weightKg: 70,
+  gender:   'male',
 };
 
 // ── Pure selectors (export for use in components) ─────────────────────────────
@@ -144,6 +140,7 @@ const useClimbStore = create(
           frame,
           state.climberStats,
           state.selectedProblem?.holds ?? [],
+          state.selectedWall?.angleDeg ?? 90,
         );
 
         const { activeBetaId, activePositionIndex, activeMoveFrameIndex } = state;
